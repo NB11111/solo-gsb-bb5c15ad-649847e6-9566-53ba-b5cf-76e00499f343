@@ -12,7 +12,9 @@
 并可按**判别字段**把样本分组生成**事件变体契约**（每组复用归纳引擎生成一个 `oneOf` 分支，
 分支内判别字段固定为对应 `const`）；
 还可配置多条 **JSON Pointer 规则**对样本做**匿名化导出**——命中标量被替换为跨样本稳定、
-保留 JSON 类型的假名，先预览各规则命中情况再一键复制。
+保留 JSON 类型的假名，先预览各规则命中情况再一键复制；
+并能在归纳出的 Schema 树上勾选 1～20 个节点生成**契约切片**——仅保留所选节点与必要祖先结构的
+独立 Schema，同步投影当前样本，后端用 Ajv 逐条校验投影样本，任一失败即拒绝产出。
 
 技术栈：Node.js · Express · React（Vite）· Ajv（draft 2020-12）
 
@@ -238,6 +240,36 @@ ASCII 比较）；构建元数据（`+build`）可解析但不参与比较。结
 - **界面流程**：点击「预览匿名化」先展示各规则命中数、未命中项与错误，生成成功后才出现
   「复制匿名化样本」与 JSON 预览；规则或原样本有任何修改，上次预览立即失效。
 
+## 契约切片：规则与入口
+
+入口：**http://localhost:8080** 页面的「⑥ 契约切片」页签（需先归纳出 Schema），或直接调用
+`POST /api/slice`。在现有 Schema 树上勾选 1～20 个节点（以 Schema JSON Pointer 标识，根节点为
+`""`，属性为 `/properties/<字段名>`、数组元素为 `/items`），后端生成一份仅保留所选节点及
+必要祖先结构的独立 Schema，并把当前样本集**同步投影**为仅含命中位置的新样本。
+
+**切片规则**：
+
+| 情形 | 处理 |
+| --- | --- |
+| 勾选了某个祖先 | 其所有子项选择被自动忽略（整个子树原样保留） |
+| 对象节点 | 只保留命中的 `properties`；`required` 仅保留原本必填且仍存在的字段 |
+| 数组节点 | 沿 `items` 递归投影每个元素；无命中 items 时元素全部丢弃 |
+| 类型联合 / `const` / 其他关键字 | 原样复制，不做改写 |
+| 未建模的实例字段（Schema 未出现的键） | 投影时丢弃 |
+| 可选字段在某条样本中缺失 | 投影结果中同样保持缺失 |
+
+- **Ajv 兜底校验**：切片 Schema 生成后，后端用 Ajv（`allErrors`）校验**每一条**投影样本；
+  任一失败则**不产出**切片（HTTP 422），响应携带每条失败样本的下标（`#0`、`#1`…）与全部
+  Ajv 错误（JSON Pointer、关键字、信息、规则路径、参数）。对归纳引擎产出的 Schema 与原始
+  样本，投影结果必然通过校验；该校验主要拦截手工构造、携带跨字段约束
+  （如 `dependentRequired`、`if/then`）的 Schema。
+- **界面流程**：树节点带复选框，被祖先覆盖的子项自动勾选并禁用（标注「已随祖先包含」），
+  达到 20 个上限后其余节点不可再选；生成成功后预览**保留字段数**与**投影样本数**，可分别
+  「复制切片 Schema」「复制投影样本」，也可展开两份 JSON 对照查看；失败时按样本索引展开错误。
+  **勾选变化或样本变化都会让上次结果立即失效**（结果区清空并提示重新生成）。
+- **限制**：单次最多勾选 **20** 个节点、投影 **200** 条样本；Pointer 非法（转义错误、不以
+  `/` 开头）或在 Schema 树中不存在时返回 400。
+
 ## 本地开发
 
 ```bash
@@ -251,7 +283,7 @@ npm run dev:client   # 前端 http://localhost:5173（/api 代理到 8080）
 ## 测试
 
 ```bash
-npm test             # node:test，覆盖归纳引擎、契约比较器、反例生成器、样本影响扫描、样本贡献度、事件变体契约、匿名化导出、HTTP API 与发布门禁（140 项）
+npm test             # node:test，覆盖归纳引擎、契约比较器、反例生成器、样本影响扫描、样本贡献度、事件变体契约、匿名化导出、契约切片、HTTP API 与发布门禁（160 项）
 ```
 
 ## API
@@ -267,6 +299,7 @@ npm test             # node:test，覆盖归纳引擎、契约比较器、反例
 | POST | `/api/contribution` | `{ samples: [<any>, ...] }`（1–50 条） | `{ total, summary: { critical, redundant }, samples: [{ index, verdict, affectedPointers }] }` |
 | POST | `/api/variant` | `{ samples: [<any>, ...], pointer: "/type" }`（≤ 200 条） | `{ pointer, totalSamples, validSamples, groupCount, groups: [{ value, count, sampleIndexes, schema, paths }], skipped: [{ index, reason }], schema: { $schema, oneOf } }`；有效分组不足 2 个或 Pointer 非法时返回 422，响应体仍携带分组概要与跳过明细 |
 | POST | `/api/anonymize` | `{ samples: [<any>, ...], rules: ["/email", "/tags/*"] }`（≤ 200 条） | `{ totalSamples, rules: [{ index, pattern, status, hits, paths, pathsTruncated, error }], samples: [<匿名化样本>] }`；非法 Pointer、命中对象/数组或规则间路径冲突时返回 422，响应体仍携带各规则统计 |
+| POST | `/api/slice` | `{ schema: {...}, samples: [<any>, ...], pointers: ["", "/properties/id"] }`（1～20 个 Pointer，≤ 200 条样本） | `{ pointers, effectivePointers, fieldCount, sampleCount, schema: <切片 Schema>, samples: [<投影样本>] }`；Pointer 非法/不存在返回 400，任一投影样本 Ajv 校验失败返回 422，响应体携带 `failures: [{ index, errors }]` 且不产出切片 |
 
 示例：
 
@@ -356,6 +389,26 @@ curl -X POST http://localhost:8080/api/anonymize \
 #      —— 相同原值（alice@example.com）跨样本映射一致，id 未命中规则保持原样
 ```
 
+生成契约切片（仅保留勾选节点与必要祖先，投影样本并逐条 Ajv 校验）：
+
+```bash
+curl -X POST http://localhost:8080/api/slice \
+  -H 'Content-Type: application/json' \
+  -d '{"schema":{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["id","name","tags"]},"samples":[{"id":1,"name":"Alice","tags":["admin"]},{"id":2,"name":"Bob","tags":[]}],"pointers":["/properties/name","/properties/tags/items"]}'
+# -> { "pointers": ["/properties/name", "/properties/tags/items"],
+#      "effectivePointers": ["/properties/name", "/properties/tags/items"],
+#      "fieldCount": 2, "sampleCount": 2,
+#      "schema": { "type": "object",
+#        "properties": {
+#          "name": { "type": "string" },
+#          "tags": { "type": "array", "items": { "type": "string" } } },
+#        "required": ["name", "tags"] },
+#      "samples": [
+#        { "name": "Alice", "tags": ["admin"] },
+#        { "name": "Bob", "tags": [] } ] }
+#      —— id 未勾选故从 properties/required 一并移除；tags 沿 items 递归
+```
+
 ## 目录结构
 
 ```
@@ -370,7 +423,8 @@ curl -X POST http://localhost:8080/api/anonymize \
 │   ├── contribution.js     # 样本贡献度分析（留一法重新归纳 + 规范化规则差异判定，单次上限 50 条）
 │   ├── variant.js          # 事件变体契约（判别字段分组 + 逐组归纳 + const 注入，合并 oneOf，单次上限 200 条）
 │   ├── anonymize.js        # 匿名化导出（JSON Pointer + 单段 * 通配递归匹配，跨样本稳定、类型保留的假名替换，单次上限 200 条）
-│   ├── app.js              # Express（/api/infer、/api/validate、/api/diff、/api/counterexample、/api/scan、/api/contribution、/api/variant、/api/anonymize、静态托管）
+│   ├── slice.js            # 契约切片（按 Schema Pointer 裁剪 properties/required/items，同步投影样本 + Ajv 逐条校验，1～20 节点/200 样本）
+│   ├── app.js              # Express（/api/infer、/api/validate、/api/diff、/api/counterexample、/api/scan、/api/contribution、/api/variant、/api/anonymize、/api/slice、静态托管）
 │   ├── index.js            # 入口：监听 PORT（默认 8080）
 │   └── test/               # node:test 单元与 API 测试
 └── client/
@@ -386,6 +440,7 @@ curl -X POST http://localhost:8080/api/anonymize \
         ├── components/ContributionPanel.jsx # 样本贡献度：留一法分析入口、关键/冗余汇总筛选、定位原样本
         ├── components/AnonymizePanel.jsx    # 匿名化导出：规则编辑、命中/未命中/错误预览、复制匿名化样本
         ├── components/VariantPanel.jsx    # 事件变体：判别 Pointer 输入、分组/跳过明细、分支 Schema、复制与接入校验
+        ├── components/SlicePanel.jsx      # 契约切片：Schema 树复选框（祖先覆盖子项、上限 20）、字段/样本数预览、分别复制切片 Schema 与投影样本、失败索引与错误
         ├── components/ReleaseGate.jsx   # 发布门禁卡片：版本输入、放行结论、报告复制
         └── components/SampleEditor.jsx  # 样本编辑器（实时 JSON 校验）
 ```

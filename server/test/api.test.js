@@ -451,6 +451,113 @@ test("POST /api/anonymize validates its input", async () => {
   assert.match(tooMany.data.error, /200/);
 });
 
+test("POST /api/slice keeps only the picked nodes and projects the samples", async () => {
+  const samples = [
+    { id: 1, name: "a", address: { city: "x", zip: "1" } },
+    { id: 2, name: "b", address: { city: "y", zip: "2" } },
+  ];
+  const { data: inferred } = await post("/api/infer", { samples });
+
+  const res = await post("/api/slice", {
+    schema: inferred.schema,
+    samples,
+    pointers: ["/properties/address/properties/city"],
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.data.sampleCount, 2);
+  assert.equal(res.data.fieldCount, 2); // address + city
+  assert.equal(res.data.schema.$schema, "https://json-schema.org/draft/2020-12/schema");
+  assert.deepEqual(Object.keys(res.data.schema.properties), ["address"]);
+  assert.deepEqual(res.data.schema.required, ["address"]);
+  assert.deepEqual(Object.keys(res.data.schema.properties.address.properties), ["city"]);
+  assert.deepEqual(res.data.schema.properties.address.required, ["city"]);
+  assert.deepEqual(res.data.samples, [{ address: { city: "x" } }, { address: { city: "y" } }]);
+  assert.deepEqual(res.data.pointers, ["/properties/address/properties/city"]);
+  assert.deepEqual(res.data.ignored, []);
+});
+
+test("POST /api/slice ignores pointers covered by a selected ancestor", async () => {
+  const samples = [{ a: { b: 1, c: 2 } }];
+  const { data: inferred } = await post("/api/infer", { samples });
+  const res = await post("/api/slice", {
+    schema: inferred.schema,
+    samples,
+    pointers: ["/properties/a/properties/b", "/properties/a"],
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.data.pointers, ["/properties/a"]);
+  assert.equal(res.data.ignored.length, 1);
+  assert.equal(res.data.ignored[0].pointer, "/properties/a/properties/b");
+  assert.match(res.data.ignored[0].reason, /已被祖先/);
+  // The ancestor keeps the whole subtree and the whole sample value.
+  assert.deepEqual(Object.keys(res.data.schema.properties.a.properties), ["b", "c"]);
+  assert.deepEqual(res.data.samples, samples);
+});
+
+test("POST /api/slice refuses with 422 + sample indexes when a projection fails validation", async () => {
+  const res = await post("/api/slice", {
+    schema: {
+      type: "object",
+      properties: { a: { type: "integer", const: 1 } },
+      required: ["a"],
+    },
+    samples: [{ a: 1 }, { a: 2 }],
+    pointers: ["/properties/a"],
+  });
+  assert.equal(res.status, 422);
+  assert.match(res.data.error, /未产出切片/);
+  // No slice is produced on failure.
+  assert.equal(res.data.schema, undefined);
+  assert.equal(res.data.samples, undefined);
+  assert.equal(res.data.failures.length, 1);
+  assert.equal(res.data.failures[0].index, 1);
+  assert.equal(res.data.failures[0].errors[0].keyword, "const");
+  assert.equal(res.data.failures[0].errors[0].pointer, "/a");
+});
+
+test("POST /api/slice validates its input", async () => {
+  const noSchema = await post("/api/slice", { samples: [{}], pointers: [""] });
+  assert.equal(noSchema.status, 400);
+  assert.match(noSchema.data.error, /'schema' object/);
+
+  const noSamples = await post("/api/slice", { schema: {}, pointers: [""] });
+  assert.equal(noSamples.status, 400);
+  assert.match(noSamples.data.error, /'samples' array/);
+
+  const noPointers = await post("/api/slice", { schema: {}, samples: [{}], pointers: [] });
+  assert.equal(noPointers.status, 400);
+  assert.match(noPointers.data.error, /'pointers' array/);
+
+  const tooManyPointers = await post("/api/slice", {
+    schema: {},
+    samples: [{}],
+    pointers: Array.from({ length: 21 }, (_, i) => `/p${i}`),
+  });
+  assert.equal(tooManyPointers.status, 400);
+  assert.match(tooManyPointers.data.error, /20/);
+
+  const tooManySamples = await post("/api/slice", {
+    schema: {},
+    samples: Array.from({ length: 201 }, () => 1),
+    pointers: [""],
+  });
+  assert.equal(tooManySamples.status, 400);
+  assert.match(tooManySamples.data.error, /200/);
+
+  const illegal = await post("/api/slice", { schema: {}, samples: [{}], pointers: ["oops"] });
+  assert.equal(illegal.status, 422);
+  assert.equal(illegal.data.invalidPointers.length, 1);
+  assert.match(illegal.data.invalidPointers[0].reason, /Pointer 非法/);
+
+  const unresolvable = await post("/api/slice", {
+    schema: { type: "object", properties: { a: { type: "string" } } },
+    samples: [{ a: "x" }],
+    pointers: ["/properties/nope"],
+  });
+  assert.equal(unresolvable.status, 422);
+  assert.match(unresolvable.data.invalidPointers[0].reason, /未命中/);
+});
+
 test("malformed JSON body gets a JSON 400", async () => {
   const res = await fetch(`${base}/api/infer`, {
     method: "POST",

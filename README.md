@@ -12,7 +12,9 @@
 并可按**判别字段**把样本分组生成**事件变体契约**（每组复用归纳引擎生成一个 `oneOf` 分支，
 分支内判别字段固定为对应 `const`）；
 还可配置多条 **JSON Pointer 规则**对样本做**匿名化导出**——命中标量被替换为跨样本稳定、
-保留 JSON 类型的假名，先预览各规则命中情况再一键复制。
+保留 JSON 类型的假名，先预览各规则命中情况再一键复制；
+也可在 Schema 树勾选 1～20 个节点生成**契约切片**——仅保留所选节点及必要祖先结构的独立
+Schema，并同步投影当前样本（后端用 Ajv 逐条校验投影，任一失败则不产出）。
 
 技术栈：Node.js · Express · React（Vite）· Ajv（draft 2020-12）
 
@@ -76,6 +78,10 @@ docker compose up --build
   JSON 类型的假名（同一规则下相同原值映射一致、不同原值不合并、整数不变小数）；界面先展示
   各规则命中数、未命中项与错误，确认后再一键复制匿名化样本。非法 Pointer、命中对象/数组，
   或不同规则命中同一路径时拒绝生成。
+- **契约切片**：在「⑥ 契约切片」页的 Schema 树勾选 1～20 个节点，生成仅保留所选节点及必要
+  祖先结构的独立 Schema，并同步投影当前样本；祖先已选时其子项自动包含（重复/被覆盖的勾选
+  会被忽略并标注）。界面预览字段数与样本数，可分别复制切片 Schema 与投影样本；后端用 Ajv
+  逐条校验投影样本，任一失败则不产出并返回样本索引与错误。
 
 ## 契约演进：操作说明
 
@@ -238,6 +244,42 @@ ASCII 比较）；构建元数据（`+build`）可解析但不参与比较。结
 - **界面流程**：点击「预览匿名化」先展示各规则命中数、未命中项与错误，生成成功后才出现
   「复制匿名化样本」与 JSON 预览；规则或原样本有任何修改，上次预览立即失效。
 
+## 契约切片：规则与入口
+
+入口：**http://localhost:8080** 页面的「⑥ 契约切片」页签（需先在「① 样本输入」归纳出
+Schema），或直接调用 `POST /api/slice`。在 Schema 树勾选 1～20 个节点后点击「生成契约切片」，
+后端生成仅保留所选节点及必要祖先结构的独立 Schema，并把每条样本沿相同路径投影。
+
+**勾选与 Pointer（Schema 树指针，RFC 6901）**：
+
+- 勾选对象属性对应 `/properties/<键>`、数组元素对应 `/items`，根节点为空串 `""`；
+  `~` 转义仅支持 `~0`（表示 `~`）与 `~1`（表示 `/`）。
+- **祖先已选时忽略其子项**：被其他已选 Pointer 覆盖的子项、以及完全重复的 Pointer 会被忽略，
+  结果区的 `ignored` 列表逐条标注原因（与勾选顺序无关）。
+- Pointer 非法或指向 Schema 中不存在的节点时拒绝生成（HTTP 422），并逐条列出原因。
+
+**切片 Schema 规则**：
+
+- 对象只保留通向（或位于）所选节点的 `properties`；`required` 仅保留**原本必填且仍存在**
+  的字段；数组沿 `items` 递归；`type` 联合、`const` 及其余非结构性关键字保持不变。
+- 被完整选中的子树原样保留；根节点自动携带 `$schema`（2020-12）标记。
+
+**样本投影规则**：
+
+- 选中的子树整体克隆；祖先对象只保留选择路径上的键；祖先数组把每个元素沿 `items` 选择
+  递归投影；样本值在祖先链上无法继续细分时（标量，或形状与所选路径不符的数组/对象），
+  该终端值按原样保留。
+- 后端用 Ajv 把每条投影样本对切片 Schema 校验一次：**任一失败则不产出**（HTTP 422），
+  响应携带失败样本索引（`failures[].index`，从 0 开始）与完整 Ajv 错误（Pointer、关键字、
+  信息、规则路径），界面按样本分组展示。
+
+**产出与失效**：
+
+- 成功时界面预览**字段数**（切片 Schema 中递归统计的 `properties` 字段总数）与**样本数**，
+  可分别「复制切片 Schema」与「复制投影样本」，也可展开查看对应 JSON。
+- 选择或样本有任何变化，上次切片结果立即失效，需重新生成。
+- 单次最多 200 条样本、20 个 Pointer；超限时接口返回 `400` 及明确错误信息。
+
 ## 本地开发
 
 ```bash
@@ -251,7 +293,7 @@ npm run dev:client   # 前端 http://localhost:5173（/api 代理到 8080）
 ## 测试
 
 ```bash
-npm test             # node:test，覆盖归纳引擎、契约比较器、反例生成器、样本影响扫描、样本贡献度、事件变体契约、匿名化导出、HTTP API 与发布门禁（140 项）
+npm test             # node:test，覆盖归纳引擎、契约比较器、反例生成器、样本影响扫描、样本贡献度、事件变体契约、匿名化导出、契约切片、HTTP API 与发布门禁（163 项）
 ```
 
 ## API
@@ -267,6 +309,7 @@ npm test             # node:test，覆盖归纳引擎、契约比较器、反例
 | POST | `/api/contribution` | `{ samples: [<any>, ...] }`（1–50 条） | `{ total, summary: { critical, redundant }, samples: [{ index, verdict, affectedPointers }] }` |
 | POST | `/api/variant` | `{ samples: [<any>, ...], pointer: "/type" }`（≤ 200 条） | `{ pointer, totalSamples, validSamples, groupCount, groups: [{ value, count, sampleIndexes, schema, paths }], skipped: [{ index, reason }], schema: { $schema, oneOf } }`；有效分组不足 2 个或 Pointer 非法时返回 422，响应体仍携带分组概要与跳过明细 |
 | POST | `/api/anonymize` | `{ samples: [<any>, ...], rules: ["/email", "/tags/*"] }`（≤ 200 条） | `{ totalSamples, rules: [{ index, pattern, status, hits, paths, pathsTruncated, error }], samples: [<匿名化样本>] }`；非法 Pointer、命中对象/数组或规则间路径冲突时返回 422，响应体仍携带各规则统计 |
+| POST | `/api/slice` | `{ schema: {...}, samples: [<any>, ...], pointers: ["/properties/a", "/properties/tags/items"] }`（样本 ≤ 200 条，Pointer 1–20 个，`""` 表示根） | `{ schema, samples, fieldCount, sampleCount, pointers, ignored: [{ pointer, reason }] }`；Pointer 非法/未命中返回 422 并携带 `invalidPointers`，任一投影样本未通过 Ajv 校验返回 422 并携带 `failures: [{ index, errors }]`，均不产出切片 |
 
 示例：
 
@@ -356,6 +399,31 @@ curl -X POST http://localhost:8080/api/anonymize \
 #      —— 相同原值（alice@example.com）跨样本映射一致，id 未命中规则保持原样
 ```
 
+勾选 Schema 树节点生成契约切片（仅保留所选结构，同步投影样本）：
+
+```bash
+# 先归纳出 Schema，再按需切片
+SCHEMA=$(curl -s -X POST http://localhost:8080/api/infer \
+  -H 'Content-Type: application/json' \
+  -d '{"samples":[{"id":1,"address":{"city":"Shanghai","zip":"200000"}},{"id":2,"address":{"city":"Beijing","zip":"100000"}}]}' \
+  | jq '.schema')
+
+curl -X POST http://localhost:8080/api/slice \
+  -H 'Content-Type: application/json' \
+  -d "{\"schema\":$SCHEMA,\"samples\":[{\"id\":1,\"address\":{\"city\":\"Shanghai\",\"zip\":\"200000\"}},{\"id\":2,\"address\":{\"city\":\"Beijing\",\"zip\":\"100000\"}}],\"pointers\":[\"/properties/address/properties/city\"]}"
+# -> { "schema": { "type": "object", "$schema": ".../2020-12/schema",
+#                   "properties": { "address": { "type": "object",
+#                      "properties": { "city": { "type": "string" } },
+#                      "required": ["city"] } },
+#                   "required": ["address"] },
+#      "samples": [{ "address": { "city": "Shanghai" } },
+#                  { "address": { "city": "Beijing" } }],
+#      "fieldCount": 2, "sampleCount": 2,
+#      "pointers": ["/properties/address/properties/city"], "ignored": [] }
+# —— id 未命中被裁掉；若某条投影样本未通过切片 Schema 的 Ajv 校验，
+#    则整体返回 422 并在 failures 中给出样本索引与错误
+```
+
 ## 目录结构
 
 ```
@@ -370,7 +438,8 @@ curl -X POST http://localhost:8080/api/anonymize \
 │   ├── contribution.js     # 样本贡献度分析（留一法重新归纳 + 规范化规则差异判定，单次上限 50 条）
 │   ├── variant.js          # 事件变体契约（判别字段分组 + 逐组归纳 + const 注入，合并 oneOf，单次上限 200 条）
 │   ├── anonymize.js        # 匿名化导出（JSON Pointer + 单段 * 通配递归匹配，跨样本稳定、类型保留的假名替换，单次上限 200 条）
-│   ├── app.js              # Express（/api/infer、/api/validate、/api/diff、/api/counterexample、/api/scan、/api/contribution、/api/variant、/api/anonymize、静态托管）
+│   ├── slice.js            # 契约切片（按勾选的 Schema 树 Pointer 裁剪结构 + 投影样本 + Ajv 逐条校验，样本上限 200 条、Pointer 上限 20 个）
+│   ├── app.js              # Express（/api/infer、/api/validate、/api/diff、/api/counterexample、/api/scan、/api/contribution、/api/variant、/api/anonymize、/api/slice、静态托管）
 │   ├── index.js            # 入口：监听 PORT（默认 8080）
 │   └── test/               # node:test 单元与 API 测试
 └── client/
@@ -378,13 +447,14 @@ curl -X POST http://localhost:8080/api/anonymize \
     └── src/
         ├── App.jsx                 # 双栏布局、样本管理、归纳/校验/演进/变体流程、基线（sessionStorage）
         ├── gate.js                 # 发布门禁：SemVer 2.0.0 解析/比较 + 放行判定（纯函数）
-        ├── components/SchemaTree.jsx   # 树形视图 + 样本路径标注 + const 徽章
+        ├── components/SchemaTree.jsx   # 树形视图 + 样本路径标注 + const 徽章 + 契约切片可勾选模式
         ├── components/ValidatePanel.jsx # 校验面板：归纳 Schema / 事件变体契约双目标，JSON Pointer 错误列表
         ├── components/DiffPanel.jsx     # 契约演进面板：视角切换、破坏性筛选、按 Pointer 分组
         ├── components/CounterexamplePanel.jsx # 反例：样本格式化展示、双侧校验结果、复制按钮
         ├── components/SampleScanPanel.jsx  # 样本影响扫描：数组输入、四分类汇总、单条双侧错误展开
         ├── components/ContributionPanel.jsx # 样本贡献度：留一法分析入口、关键/冗余汇总筛选、定位原样本
         ├── components/AnonymizePanel.jsx    # 匿名化导出：规则编辑、命中/未命中/错误预览、复制匿名化样本
+        ├── components/SlicePanel.jsx        # 契约切片：可勾选 Schema 树、字段数/样本数预览、分别复制切片 Schema 与投影样本
         ├── components/VariantPanel.jsx    # 事件变体：判别 Pointer 输入、分组/跳过明细、分支 Schema、复制与接入校验
         ├── components/ReleaseGate.jsx   # 发布门禁卡片：版本输入、放行结论、报告复制
         └── components/SampleEditor.jsx  # 样本编辑器（实时 JSON 校验）

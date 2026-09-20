@@ -50,3 +50,7 @@ export function generateVariantContract(samples, pointer) {
 export function anonymizeSamples(samples, rules) {
   return request("/api/anonymize", { samples, rules });
 }
+
+export function sliceContract(schema, samples, pointers) {
+  return request("/api/slice", { schema, samples, pointers });
+}

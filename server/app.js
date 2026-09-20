@@ -10,6 +10,7 @@ const { scanSamples } = require("./scan");
 const { analyzeContribution } = require("./contribution");
 const { buildVariantContract } = require("./variant");
 const { anonymizeSamples } = require("./anonymize");
+const { buildSlice } = require("./slice");
 
 function createApp() {
   const app = express();
@@ -159,6 +160,24 @@ function createApp() {
     const { samples, rules } = req.body || {};
     try {
       res.json(anonymizeSamples({ samples, rules }));
+    } catch (err) {
+      const status = err.status && err.status < 500 ? err.status : 500;
+      res.status(status).json({
+        error: status === 500 ? "Internal server error" : err.message,
+        ...(err.details || {}),
+      });
+    }
+  });
+
+  // Contract slice: keep only the picked schema nodes (plus the ancestor
+  // structure) and project the samples along the same paths. Every
+  // projected sample is re-validated against the slice schema with Ajv;
+  // a single failure refuses the run and reports the offending sample
+  // indexes together with the errors.
+  app.post("/api/slice", (req, res) => {
+    const { schema, samples, pointers } = req.body || {};
+    try {
+      res.json(buildSlice({ schema, samples, pointers }));
     } catch (err) {
       const status = err.status && err.status < 500 ? err.status : 500;
       res.status(status).json({

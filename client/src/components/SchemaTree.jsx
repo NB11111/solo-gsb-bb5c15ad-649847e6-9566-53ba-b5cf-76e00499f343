@@ -17,7 +17,19 @@ function TypeBadges({ types }) {
   );
 }
 
-function SchemaNode({ name, schema, pointer, paths, isRequired, depth }) {
+function SchemaNode({
+  name,
+  schema,
+  pointer,
+  paths,
+  isRequired,
+  depth,
+  selectable,
+  selectedSet,
+  onToggle,
+  ancestorSelected,
+  limitReached,
+}) {
   const [open, setOpen] = useState(depth < 2);
   const [showPaths, setShowPaths] = useState(false);
 
@@ -33,6 +45,12 @@ function SchemaNode({ name, schema, pointer, paths, isRequired, depth }) {
   const nullable = types.includes("null");
   const conflict = types.length > 1;
 
+  // Slice selection: a node covered by a selected ancestor comes along for
+  // free, so its checkbox is checked and disabled; the limit blocks new picks.
+  const covered = ancestorSelected === true;
+  const checked = selectable && (covered || selectedSet.has(pointer));
+  const childAncestorSelected = covered || (selectable && selectedSet.has(pointer));
+
   return (
     <div className="schema-node">
       <div className="schema-node__row">
@@ -44,6 +62,24 @@ function SchemaNode({ name, schema, pointer, paths, isRequired, depth }) {
         >
           {hasChildren ? (open ? "▾" : "▸") : "·"}
         </button>
+        {selectable && (
+          <input
+            type="checkbox"
+            className="slice-check"
+            checked={checked}
+            disabled={covered || (!checked && limitReached)}
+            onChange={() => onToggle(pointer)}
+            title={
+              covered
+                ? "祖先节点已勾选，该节点已自动包含"
+                : !checked && limitReached
+                  ? "已达选择上限"
+                  : checked
+                    ? "取消勾选该节点"
+                    : "勾选该节点（含其整个子树）"
+            }
+          />
+        )}
         <span className="schema-node__name">{name}</span>
         <TypeBadges types={types} />
         {schema.const !== undefined && (
@@ -86,6 +122,11 @@ function SchemaNode({ name, schema, pointer, paths, isRequired, depth }) {
               paths={paths}
               isRequired={requiredKeys.has(key)}
               depth={depth + 1}
+              selectable={selectable}
+              selectedSet={selectedSet}
+              onToggle={onToggle}
+              ancestorSelected={childAncestorSelected}
+              limitReached={limitReached}
             />
           ))}
           {hasItems && (
@@ -96,6 +137,11 @@ function SchemaNode({ name, schema, pointer, paths, isRequired, depth }) {
               paths={paths}
               isRequired={undefined}
               depth={depth + 1}
+              selectable={selectable}
+              selectedSet={selectedSet}
+              onToggle={onToggle}
+              ancestorSelected={childAncestorSelected}
+              limitReached={limitReached}
             />
           )}
         </div>
@@ -104,7 +150,14 @@ function SchemaNode({ name, schema, pointer, paths, isRequired, depth }) {
   );
 }
 
-export default function SchemaTree({ schema, paths }) {
+export default function SchemaTree({
+  schema,
+  paths,
+  selectable = false,
+  selectedSet,
+  onToggle,
+  limitReached = false,
+}) {
   return (
     <div className="schema-tree">
       <SchemaNode
@@ -114,6 +167,11 @@ export default function SchemaTree({ schema, paths }) {
         paths={paths}
         isRequired={undefined}
         depth={0}
+        selectable={selectable}
+        selectedSet={selectedSet}
+        onToggle={onToggle}
+        ancestorSelected={false}
+        limitReached={limitReached}
       />
     </div>
   );
